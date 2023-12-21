@@ -1,0 +1,242 @@
+import numpy as np
+from scipy.stats import mode
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import confusion_matrix
+from graphviz import Digraph
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+class NodoArbol:
+    def __init__(self, valor=None, izquierda=None, derecha=None, umbral=None, indice_caracteristica=None):
+        self.valor = valor
+        self.izquierda = izquierda
+        self.derecha = derecha
+        self.umbral = umbral
+        self.indice_caracteristica = indice_caracteristica
+
+def dividir_datos(X, y, indice_caracteristica, umbral):
+    izquierda = (X[:, indice_caracteristica] <= umbral)
+    derecha = ~izquierda
+    return X[izquierda], X[derecha], y[izquierda], y[derecha]
+
+def calcular_gini(y):
+    clases, cuentas = np.unique(y, return_counts=True)
+    probabilidad_clase = cuentas / len(y)
+    gini = 1 - np.sum(probabilidad_clase**2)
+    return gini
+
+def calcular_ganancia_gini(X, y, indice_caracteristica, umbral):
+    datos_izquierda, datos_derecha, etiquetas_izquierda, etiquetas_derecha = dividir_datos(X, y, indice_caracteristica, umbral)
+
+    gini_izquierda = calcular_gini(etiquetas_izquierda)
+    gini_derecha = calcular_gini(etiquetas_derecha)
+
+    proporcion_izquierda = len(etiquetas_izquierda) / len(y)
+    proporcion_derecha = len(etiquetas_derecha) / len(y)
+
+    ganancia_gini = calcular_gini(y) - (proporcion_izquierda * gini_izquierda + proporcion_derecha * gini_derecha)
+
+    return ganancia_gini
+
+def construir_arbol_pdf(X, y, profundidad_actual, max_profundidad, num_atributos, nombres_caracteristicas, graph=None, parent=None, direction=None):
+    if profundidad_actual == max_profundidad or len(np.unique(y)) == 1:
+        valor = np.argmax(np.bincount(y))
+        nodo = NodoArbol(valor=valor)
+        if graph is not None:
+            graph.node(str(id(nodo)), label=f'Clase: {valor}')
+            if parent is not None:
+                graph.edge(str(id(parent)), str(id(nodo)), label=direction)
+        return nodo
+
+    num_caracteristicas = X.shape[1]
+    atributos_aleatorios = np.random.choice(num_caracteristicas, num_atributos, replace=False)
+
+    mejores_ganancias = []
+
+    for i in atributos_aleatorios:
+        valores_unicos = np.unique(X[:, i])
+        umbrales = (valores_unicos[:-1] + valores_unicos[1:]) / 2
+        ganancias = [calcular_ganancia_gini(X, y, i, umbral) for umbral in umbrales]
+
+        if ganancias:
+            mejor_ganancia = np.max(ganancias)
+            mejor_umbral = umbrales[np.argmax(ganancias)]
+            mejores_ganancias.append((i, mejor_umbral, mejor_ganancia))
+
+    if not mejores_ganancias:
+        valor = np.argmax(np.bincount(y))
+        nodo = NodoArbol(valor=valor)
+        if graph is not None:
+            graph.node(str(id(nodo)), label=f'Clase: {valor}')
+            if parent is not None:
+                graph.edge(str(id(parent)), str(id(nodo)), label=direction)
+        return nodo
+
+    mejor_caracteristica, mejor_umbral, _ = max(mejores_ganancias, key=lambda x: x[2])
+
+    datos_izquierda, datos_derecha, etiquetas_izquierda, etiquetas_derecha = dividir_datos(X, y, mejor_caracteristica, mejor_umbral)
+
+    nodo = NodoArbol(umbral=mejor_umbral, indice_caracteristica=mejor_caracteristica)
+    if graph is not None:
+        graph.node(str(id(nodo)), label=f'{nombres_caracteristicas[mejor_caracteristica]}\nUmbral: {mejor_umbral}')
+        if parent is not None:
+            graph.edge(str(id(parent)), str(id(nodo)), label=direction)
+
+    izquierda = construir_arbol_pdf(datos_izquierda, etiquetas_izquierda, profundidad_actual + 1, max_profundidad, num_atributos, nombres_caracteristicas, graph, parent=nodo, direction='Izquierda')
+    derecha = construir_arbol_pdf(datos_derecha, etiquetas_derecha, profundidad_actual + 1, max_profundidad, num_atributos, nombres_caracteristicas, graph, parent=nodo, direction='Derecha')
+
+    nodo.izquierda = izquierda
+    nodo.derecha = derecha
+
+    return nodo
+
+def generar_arbol_pdf(X, y, max_profundidad, num_atributos, nombres_caracteristicas, nombre_archivo='arbol_decision'):
+    graph = Digraph(comment='Árbol de Decisión', format='pdf')
+    graph.node_attr.update(style='filled', color='lightblue')
+
+    arbol = construir_arbol_pdf(X, y, profundidad_actual=0, max_profundidad=max_profundidad, num_atributos=num_atributos, nombres_caracteristicas=nombres_caracteristicas, graph=graph)
+    if(int(nombre_archivo) < 10):
+      graph.render(nombre_archivo, cleanup=True)
+    return arbol
+
+def predecir_muestra(arbol, muestra):
+    if arbol.valor is not None:
+        return arbol.valor
+    elif arbol.indice_caracteristica is not None and arbol.indice_caracteristica < len(muestra):
+        if muestra[arbol.indice_caracteristica] <= arbol.umbral:
+            return predecir_muestra(arbol.izquierda, muestra)
+        else:
+            return predecir_muestra(arbol.derecha, muestra)
+    else:
+        # Si el índice no es válido, devuelve un valor predeterminado o maneja el caso según tu lógica
+        return 0  # Puedes definir un valor predeterminado o manejarlo de otra manera
+
+
+def predecir(arbol, X):
+    return np.array([predecir_muestra(arbol, muestra) for muestra in X])
+
+class BosqueAleatorio:
+    def __init__(self, num_arboles=10, max_profundidad=5, num_atributos=None):
+        # Ajustamos el número de árboles para asegurarnos de tener un número impar
+        self.num_arboles = num_arboles + 1 if num_arboles % 2 == 0 else num_arboles
+        self.max_profundidad = max_profundidad
+        self.num_atributos = num_atributos
+        self.arboles = []
+
+    def entrenar(self, X, y):
+        caracteristicas = ["age","sex","cp","trtbps","chol","fbs","restecg","thalachh","exng","oldpeak","slp","caa","thall"]
+        for _ in range(self.num_arboles):
+            indices_muestra = np.random.choice(len(X), size=len(X), replace=True)
+            X_muestra, y_muestra = X[indices_muestra], y[indices_muestra]
+            arbol = generar_arbol_pdf(X_muestra, y_muestra, max_profundidad=self.max_profundidad, num_atributos=self.num_atributos, nombres_caracteristicas=caracteristicas, nombre_archivo=f"{_}")
+            self.arboles.append(arbol)
+
+    def predecir(self, X):
+        predicciones = np.array([predecir(arbol, X) for arbol in self.arboles])
+        moda, _ = mode(predicciones, axis=0)
+        return moda.flatten()
+
+    def evaluar(self, X, y):
+        predicciones = self.predecir(X)
+        precision = accuracy_score(y, predicciones)
+        confussion_matrix = confusion_matrix(y,predicciones)
+        return precision,confussion_matrix
+
+    def importancia_caracteristicas(self, X, y):
+        importancias = np.zeros(X.shape[1])
+
+        for i in range(X.shape[1]):
+            if X.shape[1] > 1:  # Asegurarse de que hay más de una característica antes de eliminar
+                X_temp = np.delete(X, i, axis=1)
+                precision = self.evaluar(X_temp, y)
+                importancias[i] = precision
+            else:
+                importancias[0] = 0  # Si solo hay una característica, agregar 0 a accuracies
+
+        return importancias
+
+df = pd.read_csv("/content/drive/MyDrive/Bases de Datos/heart.csv")
+
+X = df.iloc[:,:-1]
+X
+
+y = df['output']
+y
+
+X_entrenamiento,X_prueba,y_entrenamiento,y_prueba = train_test_split(X.to_numpy(),y.to_numpy(),test_size=0.3,random_state=42)
+precisiones_entrenamiento = []
+precisiones_prueba = []
+for i in range(10):
+  bosque = BosqueAleatorio(num_arboles=(i+1)*10, max_profundidad=10, num_atributos=int(np.sqrt(X.shape[1])))
+  bosque.entrenar(X_entrenamiento,y_entrenamiento)
+  #Evaluar en el conjunto de entrenamiento
+  precision_entrenamiento,_ = bosque.evaluar(X_entrenamiento, y_entrenamiento)
+  precisiones_entrenamiento.append(precision_entrenamiento)
+  precision_prueba,_ = bosque.evaluar(X_prueba,y_prueba)
+  precisiones_prueba.append(precision_prueba)
+
+plt.figure(1,figsize=(10,8))
+plt.suptitle("Certeza vs Número de árboles")
+plt.subplot(2,1,1)
+plt.title("Certeza en el entrenamiento")
+plt.scatter(y=precisiones_entrenamiento,x=[10 * (i+1) for i in range(10)], c=precisiones_entrenamiento, cmap='viridis')
+plt.colorbar()
+plt.subplot(2,1,2)
+plt.title("Certeza en la prueba")
+plt.scatter(y=precisiones_prueba,x=[10 * (i+1) for i in range(10)], c=precisiones_entrenamiento, cmap='viridis')
+plt.colorbar()
+plt.xlabel("# de árboles")
+plt.ylabel("Certeza")
+plt.show()
+
+precisiones_entrenamiento = []
+precisiones_prueba = []
+for i in range(10):
+  bosque = BosqueAleatorio(num_arboles=50, max_profundidad=10, num_atributos=X.shape[1] * (i+1)//10)
+  bosque.entrenar(X_entrenamiento,y_entrenamiento)
+  #Evaluar en el conjunto de entrenamiento
+  precision_entrenamiento,_ = bosque.evaluar(X_entrenamiento, y_entrenamiento)
+  precisiones_entrenamiento.append(precision_entrenamiento)
+  precision_prueba,_ = bosque.evaluar(X_prueba,y_prueba)
+  precisiones_prueba.append(precision_prueba)
+
+plt.figure(1,figsize=(10,8))
+plt.suptitle("Certeza vs Atributos seleccionados")
+plt.subplot(2,1,1)
+plt.title("Certeza en el entrenamiento")
+plt.scatter(y=precisiones_entrenamiento,x=[X.shape[1] * (i+1)//10 for i in range(10)], c=precisiones_entrenamiento, cmap='viridis')
+plt.colorbar()
+plt.subplot(2,1,2)
+plt.title("Certeza en la prueba")
+plt.scatter(y=precisiones_prueba,x=[X.shape[1] * (i+1)//10 for i in range(10)], c=precisiones_entrenamiento, cmap='viridis')
+plt.colorbar()
+plt.xlabel("# de atributos")
+plt.ylabel("Certeza")
+plt.show()
+
+precisiones_entrenamiento = []
+precisiones_prueba = []
+for i in range(10):
+  bosque = BosqueAleatorio(num_arboles=50, max_profundidad=i+1, num_atributos=4)
+  bosque.entrenar(X_entrenamiento,y_entrenamiento)
+  #Evaluar en el conjunto de entrenamiento
+  precision_entrenamiento,_ = bosque.evaluar(X_entrenamiento, y_entrenamiento)
+  precisiones_entrenamiento.append(precision_entrenamiento)
+  precision_prueba,_ = bosque.evaluar(X_prueba,y_prueba)
+  precisiones_prueba.append(precision_prueba)
+
+plt.figure(1,figsize=(10,8))
+plt.suptitle("Certeza vs profundidad máxima")
+plt.subplot(2,1,1)
+plt.title("Certeza en el entrenamiento")
+plt.scatter(y=precisiones_entrenamiento,x=[X.shape[1] * (i+1)//10 for i in range(10)], c=precisiones_entrenamiento, cmap='viridis')
+plt.colorbar()
+plt.subplot(2,1,2)
+plt.title("Certeza en la prueba")
+plt.scatter(y=precisiones_prueba,x=[X.shape[1] * (i+1)//10 for i in range(10)], c=precisiones_entrenamiento, cmap='viridis')
+plt.colorbar()
+plt.xlabel("Profundidad")
+plt.ylabel("Certeza")
+plt.show()
